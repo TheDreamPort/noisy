@@ -11,7 +11,7 @@
         "https://wikipedia.org",
         "https://youtube.com",
         "https://github.com",
-        "https://medium.com",
+        "https://medium.com"
     ],
     "blacklisted_urls": [
         "https://t.co",
