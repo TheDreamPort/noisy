@@ -38,7 +38,8 @@
     "local": {
         "size": 25,
         "ssh": [
-
+            "sysadmin@10.0.0.11|<PASSWORD>",
+            "developer@10.0.0.104|<PASSWORD>"
         ],
         "http": [
 
