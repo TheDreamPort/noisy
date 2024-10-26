@@ -1,1 +1,5 @@
 requests>=2.9.1
+netifaces==0.11.0 
+sched2==0.8.1
+paramiko==3.5.0 
+ansible==10.4.0

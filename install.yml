@@ -1,0 +1,99 @@
+- hosts: all
+  remote_user: "{{ user }}"
+  vars:
+    - hostname: "HNLCTRL"
+    - timezone: "America/New_York"       
+    - package: noisy
+    - pyvenv_version: python3.11
+    - target_path: /opt/noisy
+  gather_facts: true
+  become: true
+  tasks:   
+    - set_fact:
+        secret: "{{ lookup('password', '/dev/null chars=ascii_lowercase,digits length=32') }}"
+
+    - name: Install required packages
+      apt:
+        pkg:
+        - vim
+        - htop
+        - python3-pip
+        - python3-dev
+        - make
+        - net-tools
+        - uidmap
+        - unzip
+        - zip
+        - curl 
+        - python-virtualenv
+      ignore_errors: yes
+    - name: Create target directory if it does not exist
+      file:
+        path: "{{target_path}}"
+        state: directory
+        mode: '0644'
+    - name: Copy files to target
+      copy:
+        src: '{{ item }}'
+        dest: '{{ target_path }}/'
+        owner: root
+        group: root
+        mode: 0644
+      loop:
+        - noisy.py
+        - config.json
+        - requirements.txt
+    - name: Change permissions of noisy.py
+      ansible.builtin.file:
+        path: "{{ target_path }}/noisy.py"
+        owner: root
+        mode: u=rwX,g=rwX,o=rwX
+        group: root
+    - name: Install packages into Virtual Environment
+      pip:
+        virtualenv: "{{ target_path }}/virtualenv"
+        virtualenv_python: "{{ pyvenv_version }}"
+        requirements: "{{ target_path }}/requirements.txt"
+  pre_tasks:
+    - name: pick new hostname
+      set_fact:
+        new_hostname: "{{ hostname }}{{ lookup('password', '/dev/null length=4 chars=ascii_letters,digits') }}"   
+    - name: change hostname
+      hostname:
+        name: "{{ new_hostname }}"
+    - name: Update /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127.0.1.1'
+        line: "127.0.1.1 {{ new_hostname }}"        
+    - name: Run the equivalent of "apt-get update" as a separate step
+      apt:
+        update_cache: yes       
+    - name: disable IPv6
+      sysctl:
+        name: "{{item.name}}"
+        value: "{{item.value}}"
+        state: present
+        reload: yes
+      with_items:
+        - { "name": net.ipv6.conf.all.disable_ipv6, "value": 1 }
+        - { "name": net.ipv6.conf.default.disable_ipv6, "value": 1 }
+        - { "name": net.ipv6.conf.lo.disable_ipv6, "value": 1 }                   
+  post_tasks:    
+    - name: install malicious systemd service
+      template:
+        src: "examples/systemd/noisy.service"
+        dest: "/lib/systemd/system/{{package}}.service"
+        owner: root
+        group: root
+        mode: '0644'  
+    - name: force systemd to reread configs
+      ansible.builtin.systemd:
+        daemon_reload: yes 
+    - name: Make sure a service unit is running
+      ansible.builtin.systemd:
+        state: started
+        name: "{{ package }}.service"
+    - name: Cleanup unused packages
+      apt:
+          autoremove: yes
