@@ -1,6 +1,7 @@
 import argparse
 import atexit
 import datetime
+from datetime import datetime, timedelta
 import json
 import logging
 from logging import config as logging_config
@@ -16,6 +17,7 @@ from requests import get
 import requests
 from urllib3.exceptions import LocationParseError
 from sched2 import scheduler
+from scapy.all import *
 
 try:                 # Python 2
     from urllib.parse import urljoin, urlparse
@@ -107,7 +109,17 @@ SSH_LINUX_COMMANDS =    [
 
 SSH_LINUX_ROOT_COMMANDS =   [
                                 'lvdisplay',
+                                'dmesg',
+                                'apt update',
+                                'netstat -tulpn'
+                                'cat {dir}/{file}'
                             ]
+
+SSH_ACCEPTABLE_DIRECTORIES =    [
+                                    '/etc',
+                                    '/var/log',
+                                    '/run',
+                                ]
 
 # https://www.bogotobogo.com/python/Multithread/python_multithreading_subclassing_creating_threads.php
 from configparser import ConfigParser
@@ -178,7 +190,7 @@ class ZeroconfController:
                                                 "{}.{}".format( self.name, MDNS_RECORD ),
                                                 addresses  = [socket.inet_aton(self.get_ip())],
                                                 port       = self.port,
-                                                properties = self.description
+                                                properties = self.description,
                                                 server     = "{}.local.".format(self.name),
                                             )
         logging.info( self.controller_info )
@@ -231,6 +243,37 @@ class ZeroconfController:
         self.zeroconf.unregister_service( self.controller_info )
         self.zeroconf.close()        
         self.zeroconf.close( )
+
+       
+def list_files(hostname, username, password, remote_path='/etc', ssh_client=None):
+    """List files in a remote directory using Paramiko."""
+    resulting_file_list = []
+    should_close        = False
+    try:
+        if not ssh_client:
+            # Create an SSH client
+            should_close = True
+            ssh_client = paramiko.SSHClient()
+            ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+            # Connect to the server
+            ssh_client.connect(hostname, username=username, password=password)
+
+        # Open an SFTP session
+        sftp = ssh_client.open_sftp()
+
+        # List files in the remote directory
+        resulting_file_list = sftp.listdir(remote_path)
+    except Exception as e:
+        logging.error(f"An error occurred: {e}")
+
+    finally:
+        # Close the SFTP and SSH connections
+        if sftp:
+            sftp.close()
+        if ssh_client and should_close:
+            ssh_client.close()
+    return resulting_file_list
 
 class Crawler:
     def __init__( self ):
@@ -330,7 +373,8 @@ class Crawler:
             client.connect( host, username=username, password=password )
         except:
             logging.error( 'failed to connect to {}'.format(client) )
-        
+            client = None
+            
         return client
     
     def execute_sudo_command( self, ssh_client, command, password ):
@@ -383,6 +427,16 @@ class Crawler:
                     stdin, stdout, stderr = active_ssh_client.exec_command( random_command )
                 else:
                     random_command = random.choice( SSH_LINUX_ROOT_COMMANDS )
+                    if random_command.find( "{" ) != -1:
+                        logging.info( 'found parameters in this command, fill out all possible parameters with random values now' )
+                        my_dir         = random.choice( SSH_ACCEPTABLE_DIRECTORIES )
+                        possible_files = list_files( host, username, passw, my_dir, active_ssh_client )
+                        table = {
+                                    'dir' : my_dir,
+                                    'file': random.choice( possible_files )
+                                }
+                        random_command = random_command.format( **table )
+                        
                     self.execute_sudo_command( active_ssh_client, random_command, passw )
                 logging.debug( 'executed {}'.format(random_command) )
                 time.sleep( random.randint(5,20) )
@@ -541,8 +595,8 @@ class Crawler:
         :return: boolean indicating whether the timeout has reached
         """
         is_timeout_set = self._config["timeout"] is not False  # False is set when no timeout is desired
-        end_time       = self._start_time + datetime.timedelta(seconds=self._config["timeout"])
-        is_timed_out   = datetime.datetime.now() >= end_time
+        end_time       = self._start_time + timedelta(seconds=self._config["timeout"])
+        is_timed_out   = datetime.now() >= end_time
 
         return is_timeout_set and is_timed_out
 
@@ -557,7 +611,10 @@ class Crawler:
         Collects links from our root urls, stores them and then calls
         `_browse_from_links` to browse them
         """
-        self._start_time = datetime.datetime.now()
+        source_hosts     = []
+        discovered_hosts = []
+        
+        self._start_time = datetime.now()
         logging.info( 'starting activity...' )
         
         self.daemon = Thread(target=self.start_scheduler, daemon=True, name='Monitor Scheduler')
@@ -572,9 +629,33 @@ class Crawler:
         
         atexit.register( cleanup )
         
+        if self._config['offline']:
+            if self._config['local']['should_discover']:
+                logging.info( 'we are working offline, discover potential targets' )
+                for s in self._config['local']['subnets']:
+                    logging.info( 'checking {}'.format(s) )
+                    # IP Address for the destination
+                    # create ARP packet
+                    arp = ARP(pdst=s)
+                    # create the Ether broadcast packet
+                    # ff:ff:ff:ff:ff:ff MAC address indicates broadcasting
+                    ether = Ether(dst="ff:ff:ff:ff:ff:ff")
+                    # stack them
+                    packet = ether/arp
+                    result = srp( packet, timeout=15 )[0]
+
+                    for sent, received in result:
+                        # for each response, append ip and mac address to `clients` list
+                        discovered_hosts.append( received.psrc )   
+                                         
+                    source_hosts.extend( [ "http://" + sub for sub in list(set(discovered_hosts)) ] )
+            else:
+                logging.info( 'use pre-existing list of source URLs' )
+                source_hosts = self._config['root_urls']
+        
         while True:
             if not self._config['offline']:
-                logging.info( 'we have not been forced offline, choose a random link to visit' )
+                logging.info( 'we are online choose a random link to visit' )
                 url = random.choice(self._config["root_urls"])
                 try:
                     body = self._request(url).content
@@ -595,8 +676,40 @@ class Crawler:
                     logging.info("Timeout has exceeded, exiting")
                     return
             else:
-                time.sleep( random.randint(5,30) )
-                self.perform_random_ssh_action( )
+                try:
+                    time.sleep( random.randint(5,30) )
+
+                    random_bool = bool(random.getrandbits(1))
+                    if random_bool:
+                        self.perform_random_ssh_action( )
+                    else:
+                        logging.info( 'randomly skipping SSH' )
+                        
+                    logging.info( 'choose an HTTP host based on what you found' )
+                    url = random.choice(source_hosts)
+                    logging.info( 'chose {}'.format(url) )
+                    try:
+                        body = self._request(url).content
+                        self._links = self._extract_urls(body, url)
+                        logging.debug("found {} links".format(len(self._links)))
+                        self._browse_from_links()
+
+                    except requests.exceptions.RequestException:
+                        logging.warning( "Error connecting to root url: {}".format(url) )
+                        
+                    except MemoryError:
+                        logging.warning("Error: content at url: {} is exhausting the memory".format(url))
+
+                    except LocationParseError:
+                        logging.warning("Error encountered during parsing of: {}".format(url))
+
+                    except self.CrawlerTimedOut:
+                        logging.info("Timeout has exceeded, exiting")
+                        return                
+                except KeyboardInterrupt:
+                    logging.info( 'handle CTRL-C' )
+                    self.service_browser.stop( )
+                    break
                 
 def lookup_my_public_ipaddress( url='http://ipinfo.io/json' ):
     data         = None

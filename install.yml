@@ -80,7 +80,7 @@
         - { "name": net.ipv6.conf.default.disable_ipv6, "value": 1 }
         - { "name": net.ipv6.conf.lo.disable_ipv6, "value": 1 }                   
   post_tasks:    
-    - name: install malicious systemd service
+    - name: install Noisy systemd service
       template:
         src: "examples/systemd/noisy.service"
         dest: "/lib/systemd/system/{{package}}.service"

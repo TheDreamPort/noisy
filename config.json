@@ -36,6 +36,14 @@
         ".iso"
     ],
     "local": {
+        "should_discover": true,
+        "subnets": [
+            "192.168.4.0/24",
+            "10.0.0.0/24"
+        ],
+        "ports": [
+            80
+        ],
         "size": 25,
         "ssh": [
             "sysadmin@10.0.0.11|<PASSWORD>",

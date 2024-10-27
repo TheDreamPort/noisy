@@ -4,3 +4,4 @@ sched2==0.8.1
 paramiko==3.5.0 
 ansible==10.4.0
 zeroconf==0.136.0 
+scapy==2.6.0

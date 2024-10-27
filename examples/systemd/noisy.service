@@ -2,9 +2,9 @@
 Description=Simple random DNS, HTTP/S internet traffic noise generator
 
 [Service]
-User=noisy
+User=root
 WorkingDirectory=/opt/noisy
-ExecStart=/usr/bin/python /opt/noisy/noisy.py --config /opt/noisy/config.json
+ExecStart=/opt/noisy/virtualenv/bin/python /opt/noisy/noisy.py --offline --config /opt/noisy/config.json
 
 [Install]
 WantedBy=multi-user.target
