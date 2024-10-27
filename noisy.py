@@ -10,6 +10,8 @@ import re
 import sys
 from threading import Thread
 import time
+from urllib.parse import urlparse, urlunparse
+
 
 import paramiko
 import paramiko.client
@@ -312,9 +314,11 @@ class Crawler:
         :return: the response Requests object
         """
         random_user_agent = random.choice(self._config["user_agents"])
-        headers = {'user-agent': random_user_agent}
+        headers =   {
+                        'user-agent': random_user_agent                        
+                    }
 
-        response = requests.get(url, headers=headers, timeout=5)
+        response = requests.get( url, headers=headers, timeout=5, allow_redirects=True, verify=False )
 
         return response
 
@@ -605,6 +609,12 @@ class Crawler:
         sc.run( )   
         while True:
             time.sleep( 5 )
+            
+    def change_to_https( self, url ):
+        parsed = urlparse(url)
+        if parsed.scheme == 'http':
+            parsed = parsed._replace(scheme='https')
+        return urlunparse(parsed)            
 
     def run( self ):
         """
@@ -694,8 +704,19 @@ class Crawler:
                         logging.debug("found {} links".format(len(self._links)))
                         self._browse_from_links()
 
-                    except requests.exceptions.RequestException:
+                    except requests.exceptions.RequestException as e:
                         logging.warning( "Error connecting to root url: {}".format(url) )
+                        logging.error( e )
+                        
+                        url = self.change_to_https( url )
+                        try:
+                            logging.info( 'changed URL to https, try again as {}'.format(url) )
+                            body = self._request(url).content
+                            self._links = self._extract_urls(body, url)
+                            logging.debug("found {} links".format(len(self._links)))
+                            self._browse_from_links()
+                        except:
+                            logging.warning( 'failed to connect again, move on' )
                         
                     except MemoryError:
                         logging.warning("Error: content at url: {} is exhausting the memory".format(url))

@@ -25,7 +25,8 @@
         - unzip
         - zip
         - curl 
-        - python-virtualenv
+        - python3-venv
+        - virtualenv
       ignore_errors: yes
     - name: Create target directory if it does not exist
       file:
@@ -48,7 +49,7 @@
         path: "{{ target_path }}/noisy.py"
         owner: root
         mode: u=rwX,g=rwX,o=rwX
-        group: root
+        group: root       
     - name: Install packages into Virtual Environment
       pip:
         virtualenv: "{{ target_path }}/virtualenv"
