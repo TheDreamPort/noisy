@@ -1,4 +1,5 @@
 import argparse
+import atexit
 import datetime
 import json
 import logging
@@ -29,7 +30,7 @@ except NameError:    # Python 3
 
 DEFAULT_LOGGING_CONFIG = {
     "version": 1,
-    "disable_existing_loggers": False,
+    "disable_existing_loggings": False,
     "formatters": {
         "default": {
             "format": "%(asctime)s - [%(module)s:%(levelname)s] [%(filename)s:%(lineno)d] - %(message)s"
@@ -54,7 +55,7 @@ DEFAULT_LOGGING_CONFIG = {
             "filename":"noisy.log"
         }        
     },
-    "loggers": {
+    "loggings": {
         "app": {
             "handlers": ["console"],
             "level": "INFO",
@@ -108,17 +109,140 @@ SSH_LINUX_ROOT_COMMANDS =   [
                                 'lvdisplay',
                             ]
 
+# https://www.bogotobogo.com/python/Multithread/python_multithreading_subclassing_creating_threads.php
+from configparser import ConfigParser
+import logging
+import threading
+import socket
+import time
+
+from zeroconf import ServiceBrowser, ServiceListener, IPVersion, ServiceInfo, Zeroconf
+
+MDNS_RECORD = '_noisy._tcp.local.'
+
+class MyZListener( ServiceListener ):
+    def __init__(self, *args, **kwargs ):
+        super(MyZListener,self).__init__( *args, **kwargs )
+        self.found_node = False
+        self.services   = []
+
+    def update_service( self, zc: Zeroconf, type_: str, name: str ) -> None:
+        logging.info(f"service {name} updated")
+        self.found_node = True
+
+    def remove_service( self, zc: Zeroconf, type_: str, name: str ) -> None:
+        logging.info(f"service {name} removed")
+        self.found_node = False
+
+    def add_service( self, zc: Zeroconf, type_: str, name: str ) -> None:
+        if not self.services:
+            self.services = []
+
+        node_info  = zc.get_service_info( type_, name )
+        logging.info( f"********** Service {name} added, service info: {node_info}" )
+        self.services.append( node_info )
+        self.found_node = True
+
+class ZeroconfController:
+    # https://stackoverflow.com/questions/74921855/python-threading-assert-group-is-none-when-creating-a-custom-thread-class
+    def __init__( self, publish_record:str = MDNS_RECORD ):
+        self.stop_event  = threading.Event()
+        self.start_time  = time.time( )
+        self.max_wait    = 60 # SECONDS
+        self.name        = socket.gethostname( )
+        
+        if ".local" in self.name:
+            self.name = self.name.split(".")[0]
+        
+        self.ip_version  = IPVersion.V4Only
+        self.primary_ip  = self.get_ip( )
+        self.description =  {    
+                                'path': '/~paulsm/',
+                                'address': self.get_ip()
+                            }
+        self.port        = 22
+
+        logging.info( 'determined primary IP to be {}'.format(self.primary_ip) )
+
+        self.zeroconf      = Zeroconf( ip_version=self.ip_version  )
+        self.listener      = MyZListener()
+        if not publish_record:
+            self.browser   = ServiceBrowser( self.zeroconf, MDNS_RECORD, self.listener )
+        else:
+            self.browser   = ServiceBrowser( self.zeroconf, publish_record, self.listener )
+
+        self.max_wait         = 120
+        self.zeroconf         = Zeroconf( ip_version=self.ip_version  )
+        self.controller_info  = ServiceInfo (
+                                                MDNS_RECORD,
+                                                "{}.{}".format( self.name, MDNS_RECORD ),
+                                                addresses  = [socket.inet_aton(self.get_ip())],
+                                                port       = self.port,
+                                                properties = self.description
+                                                server     = "{}.local.".format(self.name),
+                                            )
+        logging.info( self.controller_info )
+        
+    def start( self ):
+        self.execution_thread = threading.Thread( target=self.run, name="MDNSBrowser", args=() )
+        self.execution_thread.start( )
+
+    def get_ip( self ) -> str:
+        s = socket.socket( socket.AF_INET, socket.SOCK_DGRAM )
+        s.settimeout(0)
+        try:
+            # doesn't even have to be reachable
+            s.connect( ('10.254.254.254', 1) )
+            IP = s.getsockname()[0]
+            logging.info( s.getsockname() )
+        except Exception:
+            IP = '127.0.0.1'
+        finally:
+            s.close()
+        logging.info( 'determined primary IP of this system to be {}'.format(IP) )
+        return IP
+    
+    def stop( self ):
+        logging.info( 'stop MDNS browser' )
+        self.stop_event.set( )
+        if self.execution_thread:
+            self.execution_thread.join( )
+        logging.info( 'should be stopped...' )
+
+    def advertise_as_worker( self ):
+        logging.info( "register mdns worker service now" )
+        self.zeroconf.register_service( self.controller_info )     
+
+    def get_found_workers( self ):
+        return self.listener.services
+
+    def run( self ):
+        short_circuit = False
+        logging.info( 'begin zeroconf browsing' )
+        self.advertise_as_worker( )
+        logging.info( 'locate other workers...' )
+        self.listener         = MyZListener()
+        self.browser          = ServiceBrowser(self.zeroconf, MDNS_RECORD, self.listener)
+
+        while not self.stop_event.is_set( ):
+            elapsed_time = time.time( )
+            time.sleep( 3 )
+        logging.info( 'closing now' )
+        self.zeroconf.unregister_service( self.controller_info )
+        self.zeroconf.close()        
+        self.zeroconf.close( )
+
 class Crawler:
     def __init__( self ):
         """
         Initializes the Crawl class
         """
-        self._config     = {}
-        self.serial      = 0
-        self.last_serial = 0
-        self._links      = []
-        self._start_time = None
-        self.path_to_conf= 'config.json'
+        self._config      = {}
+        self.serial       = 0
+        self.last_serial  = 0
+        self._links       = []
+        self._start_time  = None
+        self.path_to_conf = 'config.json'
 
     class CrawlerTimedOut( Exception ):
         """
@@ -424,11 +548,11 @@ class Crawler:
 
     def start_scheduler( self ):
         logging.info( 'starting scheduler' )
-        sc.run( )
+        sc.run( )   
         while True:
             time.sleep( 5 )
 
-    def crawl( self ):
+    def run( self ):
         """
         Collects links from our root urls, stores them and then calls
         `_browse_from_links` to browse them
@@ -438,6 +562,15 @@ class Crawler:
         
         self.daemon = Thread(target=self.start_scheduler, daemon=True, name='Monitor Scheduler')
         self.daemon.start( )
+        
+        self.service_browser = ZeroconfController( )
+        self.service_browser.start( )
+        
+        def cleanup():
+            logging.info( 'shutdown various workers' )
+            self.service_browser.stop( )
+        
+        atexit.register( cleanup )
         
         while True:
             if not self._config['offline']:
@@ -509,7 +642,7 @@ def main( ):
         crawler.set_option( 'timeout', args.timeout )
 
     CRAWLER_INSTANCE = crawler
-    CRAWLER_INSTANCE.crawl( )
+    CRAWLER_INSTANCE.run( )
 
 
 if __name__ == '__main__':
